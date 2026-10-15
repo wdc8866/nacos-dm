@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # 需要 write 权限才能创建 Release
   packages: write
 
 jobs:
@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史以便生成 changelog
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -39,6 +41,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push multi-arch
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -49,3 +52,57 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # ---- 导出双架构 tar 并上传到 Release ----
+      - name: Install crane
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          curl -fsSL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Windows_x86_64.tar.gz | tar -xz -C /usr/local/bin crane
+          crane version
+
+      - name: Pull arm64 tar
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${{ steps.meta.outputs.tags }}"
+          # 取第一个 tag（语义化版本）
+          FIRST_TAG=$(echo "$TAG" | cut -d',' -f1)
+          crane pull --platform=linux/arm64 "ghcr.io/${{ github.repository_owner }}/nacos-dm:${FIRST_TAG}" nacos-dm-arm64.tar
+          echo "ARM64_TAR=nacos-dm-arm64.tar" >> $GITHUB_OUTPUT
+
+      - name: Pull amd64 tar
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${{ steps.meta.outputs.tags }}"
+          FIRST_TAG=$(echo "$TAG" | cut -d',' -f1)
+          crane pull --platform=linux/amd64 "ghcr.io/${{ github.repository_owner }}/nacos-dm:${FIRST_TAG}" nacos-dm-amd64.tar
+          echo "AMD64_TAR=nacos-dm-amd64.tar" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: changelog
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          PREV_TAG=$(git describe --tags --abbrev=0 "$TAG_NAME^" 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            git log --pretty=format:"- %s (%h)" "$PREV_TAG..$TAG_NAME" > changelog.txt
+          else
+            git log --pretty=format:"- %s (%h)" -20 > changelog.txt
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          cat changelog.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Nacos-DM ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          files: |
+            nacos-dm-arm64.tar
+            nacos-dm-amd64.tar
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
