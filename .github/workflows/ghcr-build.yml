@@ -54,12 +54,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       # ---- 导出双架构 tar 并上传到 Release ----
-      - name: Install crane
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          curl -fsSL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Windows_x86_64.tar.gz | tar -xz -C /usr/local/bin crane
-          crane version
-
+      # crane 已预装在 GitHub Actions ubuntu-latest runner 上，无需安装
       - name: Pull arm64 tar
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
